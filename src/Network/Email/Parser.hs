@@ -28,6 +28,7 @@ import Data.Attoparsec.ByteString.Char8
 import qualified Data.Attoparsec.Text as T
 import qualified Network.Email.Header.Parser as E
 import qualified Network.Email.Header.Read as E
+import Debug.Trace
 
 import Network.Email.Types
 
@@ -37,9 +38,9 @@ eof = () <$ string "\r\n" <|> endOfInput
 -- | Parses lines delimited by @delim@. The builder is concatenated to each string.
 --   When @delim@ returns Nothing, read the next line, otherwise return its last
 --   state.
-delimited :: Parser (BL.Builder, Maybe a) -> Parser (BL.Builder, a)
+delimited :: Show a => Parser (BL.Builder, Maybe a) -> Parser (BL.Builder, a)
 delimited delim = do
-  this <- line
+  this <- BL.byteString <$> takeTill (== '\r')
   (del, r') <- delim
   case r' of
    Nothing -> do
@@ -47,18 +48,11 @@ delimited delim = do
      return (this <> del <> next, r)
    Just r -> return (this <> del, r)
 
-  where line = do
-          this <- BL.byteString <$> takeTill (/= '\r')
-          next <- mempty <$ eof
-                 <|> (<>) <$> (BL.char8 <$> anyChar) <*> line
-          return $ this <> next
-
 -- | Run a 'Text' parser for a UTF-8 encoded 'ByteString' inside a 'ByteString' 'Parser'.
-parseUtf8 :: TL.Parser a -> BL.ByteString -> Parser a
+parseUtf8 :: Show a => TL.Parser a -> BL.ByteString -> Parser a
 parseUtf8 p s = do
   t <- case TL.decodeUtf8' s of
     Left (T.DecodeError e _) -> fail e
-    Left (T.EncodeError _ _) -> error "parseUtf8: can't receive EncodeError"
     Right r -> return r
   case TL.parse (p <* T.endOfInput) t of
     TL.Fail _ ctx e -> let e' = fromMaybe e (stripPrefix "Failed reading: " e)
@@ -93,10 +87,9 @@ mailPart body = do
   case E.boundary mailHeaders of
    Nothing -> do
      (dat, r) <- body
-     let mail = Mail { mailParts = []
-                     , mailBody = BL.toLazyByteString dat
-                     , ..
-                     }
+     let mail = SimpleMail { mailBody = BL.toLazyByteString dat
+                           , ..
+                           }
      return (mail, r)
    Just bnd -> do
      let parser = delimited $ boundary bnd
@@ -107,9 +100,7 @@ mailPart body = do
      (_, r') <- parser
      mailParts <- read r'
      (_, r) <- body
-     let mail = Mail { mailBody = ""
-                     , ..
-                     }
+     let mail = MultipartMail { .. }
      return (mail, r)
 
 -- | Parses e-mail according to RFC 5322.
